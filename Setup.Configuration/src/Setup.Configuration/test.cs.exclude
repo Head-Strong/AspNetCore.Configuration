@@ -1,0 +1,1158 @@
+using ClosedXML.Excel;
+using System;
+using System.IO;
+using System.Linq;
+
+namespace Prudential.PCG.Utilities.ExcelExport
+{
+    public class ExcelGenerator : IExcelGenerator
+    {
+        /// <summary>
+        /// Get Response of Excel file by providing list of data.
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="listofData"></param>
+        /// <param name="excelReport"></param>
+        /// <returns></returns>
+        public byte[] GenerateExcel(ExcelReport excelReport)
+        {
+            byte[] fileBytes = null;
+            fileBytes = ConvertDataToExcel(excelReport, null);
+            return fileBytes;
+        }
+
+        /// <summary>
+        /// Generate excel file by providing list of data.
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="listofData"></param>
+        /// <param name="excelReport"></param>
+        /// <param name="saveLocation"></param>
+        public void GenerateExcel(ExcelReport excelReport, string saveLocation)
+        {
+            ConvertDataToExcel(excelReport, saveLocation);
+        }
+
+        #region Private Methods
+        /// <summary>
+        /// Convert data to excel
+        /// </summary>
+        /// <param name="excelReport"></param>
+        /// <param name="saveLocation"></param>
+        /// <returns></returns>
+        private static byte[] ConvertDataToExcel(ExcelReport excelReport, string saveLocation)
+        {
+            var workbookStream = default(byte[]);
+
+            using (var workBook = new XLWorkbook())
+            {
+                foreach (var excelSheet in excelReport.ExcelSheets)
+                {
+                    var workSheet = workBook.Worksheets.Add(excelSheet.WorksheetTitle);
+                    
+                    // Set Title Header and Description
+                    if (excelSheet.Header != null)
+                    {
+                        TitleDescriptionFormatting(excelSheet.Header, workSheet, "Titles");
+                    }
+                    if (excelSheet.Description != null)
+                    {
+                        TitleDescriptionFormatting(excelSheet.Description, workSheet, "Description");
+                    }
+
+                    // If null in sheet Data
+                    if (excelSheet.DataAsDatatable != null && excelSheet.DataAsDatatable?.Rows?.Count > 0)
+                    {
+                        //excelSheet.DataAsDatatable = excelSheet.Data.ToDataTable();
+                        var columnCount = excelSheet.DataAsDatatable.Columns.Count;
+
+                        // Row in excel from where the datatable starts
+                        var nextRow = excelSheet.RowNumber;
+
+                        // Insert Datatable
+                        var table = workSheet.Cell(nextRow, 1).InsertTable(excelSheet.DataAsDatatable);
+                        table.Theme = XLTableTheme.None;
+                       
+                        // Alignment of Text After Inserting Table
+                        AlignmentOfText(workSheet);
+
+                        table = FormatTable(excelSheet, workSheet, columnCount, nextRow, table);
+                    }
+                    else
+                    {
+                        AlignmentOfText(workSheet);
+                    }
+                }
+
+                if (saveLocation == null)
+                {
+                    using (var memStream = new MemoryStream())
+                    {
+                        workBook.SaveAs(memStream);
+                        workbookStream = memStream.ToArray();
+                    }
+                }
+                else
+                {
+                    workBook.SaveAs(saveLocation + "\\" + excelReport.FileName + ".xlsx");
+                }
+            }
+
+            return workbookStream;
+        }
+
+        /// <summary>
+        /// Format the grid in excel.
+        /// Apply special conditions
+        /// Apply table header color
+        /// </summary>
+        /// <param name="excelReport"></param>
+        /// <param name="workSheet"></param>
+        /// <param name="columnCount"></param>
+        /// <param name="nextRow"></param>
+        /// <param name="table"></param>
+        /// <returns></returns>
+        private static IXLTable FormatTable(ExcelSheet excelReport, IXLWorksheet workSheet, 
+            int columnCount, int nextRow, IXLTable table)
+        {
+            // Format Table
+            if (excelReport.TableFormatSpecialConditions != null && excelReport.TableFormatSpecialConditions.Count() > 0)
+            {
+                foreach (var specialCondition in excelReport.TableFormatSpecialConditions)
+                {
+                    table = FormatTable(specialCondition, table, nextRow - 1);
+                }
+            }
+
+            // Set Grid Border
+            SetGridBorder(table);
+
+            // Set Grid Header Color
+            SetGridHeaderColor(workSheet, columnCount, nextRow);
+
+            return table;
+        }
+
+        /// <summary>
+        /// Format the grid table on the basis of special conditions.
+        /// </summary>
+        /// <param name="specialCondition"></param>
+        /// <param name="table"></param>
+        /// <param name="nextRow"></param>
+        /// <returns></returns>
+        private static IXLTable FormatTable(SpecialCondition specialCondition, IXLTable table, int nextRow)
+        {
+            var cellOfColumn = table.FirstRowUsed().CellsUsed(cell => cell.GetString().ToLower() == specialCondition.ColumnName.ToLower()).First();
+
+            IXLColumn column = cellOfColumn.WorksheetColumn();
+
+            if (specialCondition.EntireColumn)
+            {
+                SetSpecialConditionStylingOfGrid(specialCondition, table, -1, column.ColumnNumber(), null);
+            }
+
+            if (specialCondition.EntireRow)
+            {
+                IXLCells cells = GetSearchedCells(specialCondition, column);
+
+                foreach (var cell in cells)
+                {
+                    var rowNumber = cell.WorksheetRow().RowNumber() - nextRow;
+                    SetSpecialConditionStylingOfGrid(specialCondition, table, rowNumber, -1, null);
+                }
+            }
+
+            if (specialCondition.EntireCell)
+            {
+                IXLCells cells = GetSearchedCells(specialCondition, column);
+                foreach (var cell in cells)
+                {
+                    SetSpecialConditionStylingOfGrid(specialCondition, table, -1, -1, cell);
+                }
+            }
+
+            return table;
+        }
+
+        /// <summary>
+        /// Search Cells by Text
+        /// </summary>
+        /// <param name="specialCondition"></param>
+        /// <param name="column"></param>
+        /// <returns></returns>
+        private static IXLCells GetSearchedCells(SpecialCondition specialCondition, IXLColumn column)
+        {
+            if (string.IsNullOrWhiteSpace(specialCondition.TextToSearch))
+            {
+                throw new ArgumentNullException("TextToSearch");
+            }
+
+            var cells = column.CellsUsed(cell => cell.GetString().ToLower() == specialCondition.TextToSearch.ToLower());
+            return cells;
+        }
+
+        /// <summary>
+        /// Apply special styling to grid rows and columns.
+        /// e.g. background color of row or column.
+        /// Bold text of column or row.
+        /// </summary>
+        /// <param name="specialCondition"></param>
+        /// <param name="table"></param>
+        /// <param name="rowNumber"></param>
+        /// <param name="columnNumber"></param>
+        private static void SetSpecialConditionStylingOfGrid(SpecialCondition specialCondition, IXLTable table, int rowNumber, int columnNumber, IXLCell xlCell)
+        {
+
+            if (!string.IsNullOrWhiteSpace(specialCondition.ForeColor))
+            {
+                if (columnNumber > 0) table.Column(columnNumber).Style.Font.FontColor = XLColor.FromHtml(specialCondition.ForeColor);
+                if (rowNumber > 0) table.Row(rowNumber).Style.Font.FontColor = XLColor.FromHtml(specialCondition.ForeColor);
+                if (xlCell != null)
+                {
+                    xlCell.Style.Font.FontColor = XLColor.FromHtml(specialCondition.ForeColor);
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(specialCondition.BackGroundColor))
+            {
+                if (columnNumber > 0)
+                {
+                    table.Column(columnNumber).Style.Fill.BackgroundColor = XLColor.FromHtml(specialCondition.BackGroundColor);
+                }
+
+                if (rowNumber > 0) table.Row(rowNumber).Style.Fill.BackgroundColor = XLColor.FromHtml(specialCondition.BackGroundColor);
+
+                if (xlCell != null)
+                {
+                    xlCell.Style.Fill.BackgroundColor = XLColor.FromHtml(specialCondition.BackGroundColor);
+                }
+            }
+
+            TextStyling(specialCondition, table, rowNumber, columnNumber, xlCell);
+        }
+
+        /// <summary>
+        /// Set the grid border
+        /// </summary>
+        /// <param name="table"></param>
+        private static void SetGridBorder(IXLTable table)
+        {
+            table.Style.Border.TopBorder = XLBorderStyleValues.Thin;
+            table.Style.Border.TopBorderColor = XLColor.Black;
+
+            table.Style.Border.RightBorder = XLBorderStyleValues.Thin;
+            table.Style.Border.RightBorderColor = XLColor.Black;
+
+            table.Style.Border.BottomBorder = XLBorderStyleValues.Thin;
+            table.Style.Border.BottomBorderColor = XLColor.Black;
+
+            table.Style.Border.LeftBorder = XLBorderStyleValues.Thin;
+            table.Style.Border.LeftBorderColor = XLColor.Black;
+        }
+
+        /// <summary>
+        /// Set the Grid Header Color
+        /// </summary>
+        /// <param name="workSheet"></param>
+        /// <param name="columnCount"></param>
+        /// <param name="nextRow"></param>
+        private static void SetGridHeaderColor(IXLWorksheet workSheet, int columnCount, int nextRow)
+        {
+            for (int colIndex = 1; colIndex <= columnCount; colIndex++)
+            {
+                workSheet.Cell(nextRow, colIndex).Style.Font.SetItalic(false);
+                workSheet.Cell(nextRow, colIndex).Style.Font.SetUnderline(XLFontUnderlineValues.None);
+                workSheet.Cell(nextRow, colIndex).Style.Font.SetBold();
+                workSheet.Cell(nextRow, colIndex).Style.Font.FontColor = XLColor.White;
+                workSheet.Cell(nextRow, colIndex).Style.Fill.BackgroundColor = XLColor.Blue;
+                workSheet.Cell(nextRow, colIndex).Style.Alignment.SetHorizontal(XLAlignmentHorizontalValues.Center);
+                workSheet.Cell(nextRow, colIndex).Style.Alignment.SetVertical(XLAlignmentVerticalValues.Center);
+            }
+        }
+
+        /// <summary>
+        /// Align the text of worksheet
+        /// </summary>
+        /// <param name="workSheet"></param>
+        private static void AlignmentOfText(IXLWorksheet workSheet)
+        {
+            workSheet.Columns().AdjustToContents();
+            workSheet.Rows().AdjustToContents();
+            workSheet.Style.Alignment.Horizontal = XLAlignmentHorizontalValues.Left;
+            workSheet.Style.Alignment.Vertical = XLAlignmentVerticalValues.Top;
+            workSheet.Style.Alignment.WrapText = true;
+        }
+
+        /// <summary>
+        /// Title and description formatting
+        /// </summary>
+        /// <param name="reportHeader"></param>
+        /// <param name="workSheet"></param>
+        /// <param name="name"></param>
+        private static void TitleDescriptionFormatting(TextDetails reportHeader, IXLWorksheet workSheet, string name)
+        {
+            workSheet.Cell(reportHeader.StartCell).SetValue(reportHeader.Text);
+            workSheet.Cell(reportHeader.StartCell).AsRange().AddToNamed(name);
+            workSheet.Range(reportHeader.CellRange).Merge();
+            TextStyling(reportHeader.CellRange, workSheet, reportHeader.TextStyling);
+            if (!string.IsNullOrWhiteSpace(reportHeader.ForeColor))
+            {
+                workSheet.Range(reportHeader.CellRange).Style.Font.FontColor = XLColor.FromHtml(reportHeader.ForeColor);
+            }
+            if (!string.IsNullOrWhiteSpace(reportHeader.BackGroundColor))
+            {
+                workSheet.Range(reportHeader.CellRange).
+                    Style.Fill.BackgroundColor = XLColor.FromHtml(reportHeader.BackGroundColor);
+            }            
+        }
+
+        /// <summary>
+        /// Text styling of header and description
+        /// </summary>
+        /// <param name="cellRange"></param>
+        /// <param name="rangeBase"></param>
+        /// <param name="textStyle"></param>
+        private static void TextStyling(string cellRange, IXLWorksheet rangeBase, TextStyle textStyle)
+        {
+            switch (textStyle)
+            {
+                case TextStyle.Bold:
+                    rangeBase.Range(cellRange).Style.Font.SetBold();
+                    break;
+                case TextStyle.BoldWithUnderline:
+                    rangeBase.Range(cellRange).Style.Font.SetBold();
+                    rangeBase.Range(cellRange).Style.Font.SetUnderline();
+                    break;
+                case TextStyle.Italic:
+                    rangeBase.Range(cellRange).Style.Font.SetItalic();
+                    break;
+                case TextStyle.ItalicWithUnderline:
+                    rangeBase.Range(cellRange).Style.Font.SetItalic();
+                    rangeBase.Range(cellRange).Style.Font.SetUnderline();
+                    break;
+                case TextStyle.NormalWithUnderline:
+                    rangeBase.Range(cellRange).Style.Font.SetUnderline();
+                    break;
+            }
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="specialCondition"></param>
+        /// <param name="table"></param>
+        /// <param name="rowNumber"></param>
+        /// <param name="columnNumber"></param>
+        /// <param name="xlCell"></param>
+        private static void TextStyling(SpecialCondition specialCondition, IXLTable table, int rowNumber, int columnNumber, IXLCell xlCell)
+        {
+            switch (specialCondition.TextStyling)
+            {
+                case TextStyle.Bold:
+                    if (columnNumber > 0) table.Column(columnNumber).Style.Font.SetBold();
+                    if (rowNumber > 0) table.Row(rowNumber).Style.Font.SetBold();
+                    if (xlCell != null) xlCell.Style.Font.SetBold();
+                    break;
+
+                case TextStyle.BoldWithUnderline:
+                    if (columnNumber > 0)
+                    {
+                        table.Column(columnNumber).Style.Font.SetBold();
+                        table.Column(columnNumber).Style.Font.SetUnderline();
+                    }
+                    if (rowNumber > 0)
+                    {
+                        table.Row(rowNumber).Style.Font.SetBold();
+                        table.Row(rowNumber).Style.Font.SetUnderline();
+                    }
+                    if (xlCell != null)
+                    {
+                        xlCell.Style.Font.SetBold();
+                        xlCell.Style.Font.SetUnderline();
+                    }
+                    break;
+
+                case TextStyle.Italic:
+                    if (columnNumber > 0) table.Column(columnNumber).Style.Font.SetItalic();
+                    if (rowNumber > 0) table.Row(rowNumber).Style.Font.SetItalic();
+                    if (xlCell != null) xlCell.Style.Font.SetItalic();
+                    break;
+
+                case TextStyle.ItalicWithUnderline:
+                    if (columnNumber > 0)
+                    {
+                        table.Column(columnNumber).Style.Font.SetItalic();
+                        table.Column(columnNumber).Style.Font.SetUnderline();
+                    }
+                    if (rowNumber > 0)
+                    {
+                        table.Row(rowNumber).Style.Font.SetItalic();
+                        table.Row(rowNumber).Style.Font.SetUnderline();
+                    }
+                    if (xlCell != null)
+                    {
+                        xlCell.Style.Font.SetItalic();
+                        xlCell.Style.Font.SetUnderline();
+                    }
+                    break;
+
+                case TextStyle.NormalWithUnderline:
+                    if (columnNumber > 0) table.Column(columnNumber).Style.Font.SetUnderline();
+                    if (rowNumber > 0) table.Row(rowNumber).Style.Font.SetUnderline();
+                    if (xlCell != null) xlCell.Style.Font.SetUnderline();
+                    break;
+            }
+        }
+        #endregion
+    }
+}
+/////////////////////////////////////////////////////////
+using System.Collections.Generic;
+
+namespace Prudential.PCG.Utilities.ExcelExport
+{
+    public class ExcelReport
+    {
+        /// <summary>
+        /// File Name. It is used if saving in a location
+        /// </summary>
+        public string FileName { get; set; }
+
+        /// <summary>
+        /// Excel Sheets
+        /// </summary>
+        public IList<ExcelSheet> ExcelSheets { get; set; }
+    }
+    
+    #region TextStyle Enum
+    public enum TextStyle
+    {
+        Normal,
+        Bold,
+        Italic,
+        NormalWithUnderline,
+        BoldWithUnderline,
+        ItalicWithUnderline
+    }
+    #endregion
+}
+/////////////////////////////////////////////////////////
+using System.Collections.Generic;
+using System.Data;
+
+namespace Prudential.PCG.Utilities.ExcelExport
+{
+    public class ExcelSheet
+    {
+        private string _worksheetTitle;
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="reportHeader">Report Title</param>
+        /// <param name="reportDescription">Description comes after title</param>
+        /// <param name="worksheetTitle">work sheet name</param>
+        /// <param name="rowNumber">From which row the table starts</param>
+        public ExcelSheet(TextDetails reportHeader, TextDetails reportDescription, string worksheetTitle, int rowNumber)
+        {
+            Header = reportHeader;
+            Description = reportDescription;
+            _worksheetTitle = worksheetTitle;
+            RowNumber = rowNumber;
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="reportHeader">Report Title</param>
+        /// <param name="worksheetTitle">work sheet name</param>
+        /// <param name="rowNumber">From which row the table starts</param>
+        public ExcelSheet(TextDetails reportHeader, string worksheetTitle, int rowNumber) : this(reportHeader, null, worksheetTitle, rowNumber)
+        {
+
+        }
+
+        /// <summary>
+        /// 
+        /// </summary>
+        /// <param name="worksheetTitle"></param>
+        public ExcelSheet(string worksheetTitle) : this(null, null, worksheetTitle, 1)
+        {
+
+        }
+
+        /// <summary>
+        /// Display Header on the top of the report
+        /// </summary>
+        public TextDetails Header { get; }
+
+        /// <summary>
+        /// Display Description on the top of the row.
+        /// </summary>
+        public TextDetails Description { get; }
+
+        /// <summary>
+        /// Work Sheet Name
+        /// </summary>
+        public string WorksheetTitle
+        {
+            get
+            {
+                return _worksheetTitle.Length > 31 ? _worksheetTitle.Substring(0, 30) : _worksheetTitle;
+            }
+        }
+
+        /// <summary>
+        /// Row number from where the datatable starts
+        /// </summary>
+        public int RowNumber { get; set; }
+
+        /// <summary>
+        /// Not exposed outside of library. 
+        /// It is used to store data property in datatable format.
+        /// </summary>
+        internal DataTable DataAsDatatable { get; set; }
+
+        /// <summary>
+        /// Special Conditions to format the grid.
+        /// </summary>
+        public List<SpecialCondition> TableFormatSpecialConditions { get; set; }
+
+        public ExcelSheet AddData<T>(List<T> data)
+        {
+            if (data.IsNotNull())
+            {
+                DataAsDatatable = data.ToDataTable();
+            }
+            else
+            {
+                DataAsDatatable = null;
+            }
+
+            return this;
+        }
+    }
+}
+///////////////////////////////////////////////////////
+namespace Prudential.PCG.Utilities.ExcelExport
+{
+    public interface IExcelGenerator
+    {
+        /// <summary>
+        /// Generate Excel file by providing worksheet details
+        /// </summary>
+        /// <typeparam name="T">Type of work sheet table data.</typeparam>
+        /// <param name="excelReport"></param>
+        /// <returns></returns>
+        byte[] GenerateExcel(ExcelReport excelReport);
+
+        /// <summary>
+        /// Generate Excel file by providing worksheet details
+        /// </summary>
+        /// <typeparam name="T">Type of work sheet table data.</typeparam>
+        /// <param name="excelReport"></param>
+        /// <param name="saveLocation"></param>
+        void GenerateExcel(ExcelReport excelReport, string saveLocation);
+    }
+}
+/////////////////////////////////////////////////////////
+using System;
+
+namespace Prudential.PCG.Utilities.ExcelExport
+{
+    [AttributeUsage(AttributeTargets.Field)]
+    public class ExcludeExcelAttribute : Attribute
+    {
+        public ExcludeExcelAttribute(bool excludeInExcelReport = true)
+        {
+            ExcludeInExcel = excludeInExcelReport;
+        }
+
+        public bool ExcludeInExcel { get; }
+    }
+}
+//////////////////////////////////////////////////////////
+namespace Prudential.PCG.Utilities.ExcelExport
+{
+    public class SpecialCondition
+    {
+        /// <summary>
+        /// Title of column name
+        /// </summary>
+        public string ColumnName { get; set; }
+
+        /// <summary>
+        /// Used to identify the row.
+        /// </summary>
+        public string TextToSearch { get; set; }
+
+        /// <summary>
+        /// Used for text styling of a row or column.
+        /// </summary>
+        public TextStyle TextStyling { get; set; }
+
+        /// <summary>
+        /// If true then set styling of entire column
+        /// </summary>
+        public bool EntireColumn { get; set; }
+
+        /// <summary>
+        /// If true then set styling of entire row
+        /// </summary>
+        public bool EntireRow { get; set; }
+
+        /// <summary>
+        /// If true then set styling of entire cells
+        /// </summary>
+        public bool EntireCell { get; set; }
+
+        /// <summary>
+        /// Set forecolor of text
+        /// </summary>
+        public string ForeColor { get; set; }
+
+        /// <summary>
+        /// Set background color of row or column
+        /// </summary>
+        public string BackGroundColor { get; set; }
+    }
+}
+/////////////////////////////////////////////////////////
+
+namespace Prudential.PCG.Utilities.ExcelExport
+{
+    public class TextDetails
+    {
+        public TextDetails(string startCell, string endCell, string text)
+        {
+            StartCell = startCell;
+            EndCell = endCell;
+            Text = text;
+            Validate();
+        }
+
+        /// <summary>
+        /// A1 to E1 - 1 row 5 columns
+        /// or A1 to E5 - 5 row 5 columns 
+        /// It represents A1
+        /// </summary>
+        public string StartCell { get; }
+
+        /// <summary>
+        /// A1 to E1 - 1 row 5 columns
+        /// or A1 to E5 - 5 row 5 columns 
+        /// It represents E1 or E5
+        /// </summary>
+        public string EndCell { get; }
+
+        public string CellRange => StartCell + ":" + EndCell;
+
+        public string Text { get; }
+
+        public TextStyle TextStyling { get; set; }
+
+        /// <summary>
+        /// Value like yellow, green or #000, #fff
+        /// </summary>
+        public string ForeColor { get; set; }
+
+        /// <summary>
+        /// Value like yellow, green or #000, #fff 
+        /// </summary>
+        public string BackGroundColor { get; set; }
+
+        private void Validate()
+        {
+            if (string.IsNullOrWhiteSpace(this.StartCell) || string.IsNullOrWhiteSpace(this.EndCell)
+                || string.IsNullOrWhiteSpace(this.Text))
+            {
+                throw new System.ArgumentNullException();
+            }
+        }
+    }
+}
+/////////////////////////////////////////////////////////////////
+using Prudential.PCG.Utilities.ExcelExport;
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.Data;
+using System.Linq;
+
+namespace Prudential.PCG.Utilities
+{
+    public static class Extension
+    {
+        /// <summary>
+        /// Convert list to datatable.
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="listCollection"></param>
+        /// <returns></returns>
+        public static DataTable ToDataTable<T>(this IList<T> listCollection)
+        {
+            return ConvertToDataTable(listCollection, false);
+        }
+
+        /// <summary>
+        /// Convert list to datatable but ignore those columns which has ExcludeExcelAttribute. 
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="listCollection"></param>
+        /// <param name="excludeExcelColumns"></param>
+        /// <returns></returns>
+        public static DataTable ToDataTable<T>(this IList<T> listCollection, bool excludeExcelColumns)
+        {
+            return ConvertToDataTable(listCollection, excludeExcelColumns);
+        }
+
+        /// <summary>
+        /// Check list should not be null
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="list"></param>
+        /// <returns></returns>
+        public static bool IsNotNull<T>(this List<T> list)
+        {
+            return (list != null && list.Count() > 0);
+        }
+
+        #region Helper Methods
+        /// <summary>
+        /// Convert list to datatable
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <param name="listCollection"></param>
+        /// <param name="excludeExcelColumns"></param>
+        /// <returns></returns>
+        private static DataTable ConvertToDataTable<T>(IList<T> listCollection, bool excludeExcelColumns)
+        {
+            List<PropertyDescriptor> propertyDescriptors = default(List<PropertyDescriptor>);
+
+            if (excludeExcelColumns)
+            {
+                propertyDescriptors = GetOnlyExcelProperties<T>();
+            }
+            else
+            {
+                propertyDescriptors = GetAllProperties<T>();
+            }
+
+
+            DataTable dataTable = new DataTable();
+
+            foreach (var propDesc in propertyDescriptors)
+            {
+                var name = string.IsNullOrWhiteSpace(propDesc.DisplayName) ? propDesc.Name : propDesc.DisplayName;               
+                dataTable.Columns.Add(name, Nullable.GetUnderlyingType(propDesc.PropertyType) ?? propDesc.PropertyType);
+            }
+
+            object[] valueObjects = new object[propertyDescriptors.Count];
+
+            foreach (T listItem in listCollection)
+            {
+                var i = 0;
+                foreach (var propDesc in propertyDescriptors)
+                {
+                    valueObjects[i] = propDesc.GetValue(listItem);
+                    i = i + 1;
+                }
+
+                dataTable.Rows.Add(valueObjects);
+            }
+
+            return dataTable;
+        }
+
+        /// <summary>
+        /// Get all properties of a list.
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <returns></returns>
+        private static List<PropertyDescriptor> GetAllProperties<T>()
+        {
+            List<PropertyDescriptor> propertyDescriptors;
+            PropertyDescriptorCollection propDescCollection = TypeDescriptor.GetProperties(typeof(T));
+            propertyDescriptors = new List<PropertyDescriptor>();
+
+            for (int i = 0; i < propDescCollection.Count; i++)
+            {
+                PropertyDescriptor propDesc = propDescCollection[i];
+                propertyDescriptors.Add(propDesc);
+            }
+
+            return propertyDescriptors;
+        }
+
+        /// <summary>
+        /// Get only those properties where excel attribute is not defined.
+        /// </summary>
+        /// <typeparam name="T"></typeparam>
+        /// <returns></returns>
+        private static List<PropertyDescriptor> GetOnlyExcelProperties<T>()
+        {
+            PropertyDescriptorCollection propDescCollection = TypeDescriptor.GetProperties(typeof(T));
+
+            List<PropertyDescriptor> propertyDescriptors = new List<PropertyDescriptor>();
+
+            foreach (PropertyDescriptor propDesc in propDescCollection)
+            {
+                var includeInExcel = propDesc.Attributes[typeof(ExcludeExcelAttribute)] as ExcludeExcelAttribute;
+
+                if (includeInExcel != null && includeInExcel.ExcludeInExcel)
+                {
+                    // Donot include these property descriptors
+                }
+                else
+                {
+                    propertyDescriptors.Add(propDesc);
+                }
+            }
+
+            return propertyDescriptors;
+        }
+        #endregion
+    }
+}
+////////////////////////////////////////////////////////////////
+using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Prudential.PCG.Utilities.ExcelExport;
+using Prudential.PCG.Utilities.Test.ExcelExport.TestData;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Reflection;
+
+namespace Prudential.PCG.Utilities.Test.ExcelExport
+{
+    [TestClass]
+    public class ExcelGeneratorTest
+    {
+        private IExcelGenerator _excelGenerator;
+
+        [TestMethod]
+        public void Generate_Excel_File_WithMultipleSheetsAndStyling()
+        {
+            // Arrange
+            _excelGenerator = new ExcelGenerator();
+            var user = ExcelTestData.GetUsers().ToList();
+            var user1 = ExcelTestData1.GetUsers().ToList();
+            var issues = Issu.GetIssus().ToList();
+            string fileName = "Test_Mul_Sheet";
+            string fileLocation = FileLocation + @"\" + fileName + ".xlsx";
+            DeleteExisingFile(fileName);
+            var reportHeader = new TextDetails("A1", "E1", "Good Faith Deposit - Detail Totals Report")
+            {
+                TextStyling = TextStyle.BoldWithUnderline,
+                BackGroundColor = "yellow"
+            };
+            var reportDescription = new TextDetails("A2", "E2", "Requested by Aditya Magotra on 09/20/2018 at 5:55 AM")
+            {
+                TextStyling = TextStyle.Italic,
+                BackGroundColor = "green"
+            };
+            var excelReport = new ExcelReport
+            {
+                FileName = fileName,
+                ExcelSheets = new List<ExcelSheet>
+                {
+                    new ExcelSheet(reportHeader,reportDescription,"US-Sheet",3)
+                    {
+                        TableFormatSpecialConditions = new List<SpecialCondition>()
+                        {
+                            new SpecialCondition
+                            {
+                                BackGroundColor = "#f0f0c4",
+                                ColumnName = "Address",
+                                EntireColumn = true,
+                                ForeColor = "#000000",
+                                TextStyling = TextStyle.BoldWithUnderline
+                            },
+                            new SpecialCondition
+                            {
+                                BackGroundColor = "#9A98B5",
+                                EntireRow = true,
+                                ColumnName = "Address",
+                                TextToSearch = "London",
+                                TextStyling = TextStyle.ItalicWithUnderline
+                            }
+                        }
+                    }.AddData<ExcelTestData>(user),
+                    new ExcelSheet(reportHeader,"USD-Sheet2",2)
+                    {
+                        TableFormatSpecialConditions = new List<SpecialCondition>()
+                        {
+                            new SpecialCondition
+                            {
+                                BackGroundColor = "#f0f0c4",
+                                ColumnName = "EmailAddress",
+                                EntireColumn = true,
+                                ForeColor = "#000000",
+                                TextStyling = TextStyle.Bold
+                            },
+                            new SpecialCondition
+                            {
+                                BackGroundColor = "#9A98B5",
+                                EntireRow = true,
+                                ColumnName = "EmailAddress",
+                                TextToSearch = "aditya.magotra@pramerica.ie",
+                                TextStyling = TextStyle.ItalicWithUnderline
+                            }
+                        }
+                    }.AddData(user1),
+                    new ExcelSheet("USD-Sheet3")
+                    {
+                        TableFormatSpecialConditions = new List<SpecialCondition>()
+                        {
+                            new SpecialCondition
+                            {
+                                BackGroundColor = "#f0f0c4",
+                                ColumnName = nameof(ExcelTestData.Id),
+                                EntireColumn = true,
+                                ForeColor = "#000000",
+                                TextStyling = TextStyle.Italic
+                            },
+                            new SpecialCondition
+                            {
+                                BackGroundColor = "#9A98B5",
+                                EntireRow = true,
+                                ColumnName = "Email",
+                                TextToSearch = "adi.mag@pramerica.ie",
+                                TextStyling = TextStyle.ItalicWithUnderline
+                            }
+                        }
+                    }.AddData(user),
+                    new ExcelSheet(reportHeader, reportDescription, "USD-Sheet4", 3).AddData<ExcelTestData>(null),                    
+                    new ExcelSheet("USD-Sheet5")
+                    {
+                        TableFormatSpecialConditions = new List<SpecialCondition>()
+                        {
+                            new SpecialCondition
+                            {
+                                BackGroundColor = "#f0f0c4",
+                                ColumnName = nameof(ExcelTestData.Address),
+                                EntireCell = true,
+                                ForeColor = "#000000",
+                                TextStyling = TextStyle.Italic,
+                                TextToSearch="Dublin"
+                            }
+                        }
+                    }.AddData(user),
+                    new ExcelSheet("USD-Sheet6")
+                    {
+                        TableFormatSpecialConditions = new List<SpecialCondition>()
+                        {
+                            new SpecialCondition
+                            {
+                                BackGroundColor = "yellow",
+                                ColumnName = nameof(Issu.Location),
+                                EntireCell = true,
+                                ForeColor = "#000000",
+                                EntireColumn = true,
+                                EntireRow = true,
+                                TextToSearch="Ireland",
+                                TextStyling = TextStyle.Italic
+                            }
+                        }
+                    }.AddData(issues),
+                }
+            };
+
+            // Act
+            _excelGenerator.GenerateExcel(excelReport, FileLocation);
+
+            Console.WriteLine(fileLocation);
+
+            // Assert
+            Assert.IsTrue(File.Exists(fileLocation));
+
+        }
+
+        [TestMethod]
+        public void Generate_Excel_File_WithSingleSheetAndStyling()
+        {
+            // Arrange
+            _excelGenerator = new ExcelGenerator();
+            var user = ExcelTestData.GetUsers().ToList();
+            string fileName = "Test_Sing_Sheet";
+            string fileLocation = FileLocation + @"\" + fileName + ".xlsx";
+            DeleteExisingFile(fileName);
+            var reportHeader = new TextDetails("A1", "E1", "Good Faith Deposit - Detail Totals Report")
+            {
+                TextStyling = TextStyle.BoldWithUnderline
+            };
+            var reportDescription = new TextDetails("A2", "E2", "Requested by Aditya Magotra on 09/20/2018 at 5:55 AM")
+            {
+                TextStyling = TextStyle.Italic
+            };
+            var excelReport = new ExcelReport
+            {
+                FileName = fileName,
+                ExcelSheets = new List<ExcelSheet>
+                {
+                    new ExcelSheet(reportHeader,reportDescription,"US-Sheet",3)
+                    {
+                        TableFormatSpecialConditions = new List<SpecialCondition>()
+                        {
+                            new SpecialCondition
+                            {
+                                BackGroundColor = "#f0f0c4",
+                                ColumnName = "Address",
+                                EntireColumn = true,
+                                ForeColor = "#000000",
+                                TextStyling = TextStyle.BoldWithUnderline
+                            },
+                            new SpecialCondition
+                            {
+                                BackGroundColor = "#9A98B5",
+                                EntireRow = true,
+                                ColumnName = "Address",
+                                TextToSearch = "London",
+                                TextStyling = TextStyle.ItalicWithUnderline
+                            }
+                        }                        
+                    }.AddData(user)
+                }
+            };
+
+            // Act
+            _excelGenerator.GenerateExcel(excelReport, FileLocation);
+
+            Console.WriteLine(fileLocation);
+
+            // Assert
+            Assert.IsTrue(File.Exists(fileLocation));
+
+        }
+
+
+
+        #region Helper
+        private string FileLocation
+        {
+            get
+            {
+                var codebase = Assembly.GetExecutingAssembly().CodeBase;
+                var pathUrlToDllDirectory = Path.GetDirectoryName(codebase);
+                var pathToDllDirectory = new Uri(pathUrlToDllDirectory).LocalPath;
+                return pathToDllDirectory;
+            }
+        }
+
+        private void DeleteExisingFile(string fileLocation)
+        {
+            if (File.Exists(fileLocation))
+            {
+                Console.WriteLine("File Deleted :" + fileLocation);
+                File.Delete(fileLocation);
+            }
+        }
+        #endregion
+    }
+}
+/////////////////////////////////////////////////////////
+using System.Collections.Generic;
+using System.ComponentModel;
+
+namespace Prudential.PCG.Utilities.Test.ExcelExport.TestData
+{
+    public class ExcelTestData
+    {
+        public decimal? Id { get; set; }
+
+        [DisplayName("First Name")]
+        public string FirstName { get; set; }
+
+        [DisplayName("Last Name")]
+        public string LastName { get; set; }
+
+        public string Address { get; set; }
+
+        public string Email { get; set; }
+
+        public static IEnumerable<ExcelTestData> GetUsers()
+        {
+            var users = new List<ExcelTestData>
+            {
+                new ExcelTestData { Id = 1233.89M, FirstName = "Aditya", LastName = "Magotra", Address="Letterkenny", Email="aditya.magotra@pramerica.ie" },
+                new ExcelTestData { Id = 22.88M, FirstName = "ABC", LastName = "DEF",Address="Dublin", Email="abc.def@pramerica.ie" },
+                new ExcelTestData{ },
+                new ExcelTestData { Id = 3.00M, FirstName = "GHI", LastName = "JKL",Address="London", Email="ghi.jkl@pramerica.ie" },
+                new ExcelTestData { Id = 45555.888M, FirstName = "Test", LastName = "JKL",Address="London", Email="ghi.jkl@pramerica.ie" },
+                new ExcelTestData{ },
+                new ExcelTestData{ },
+                new ExcelTestData { Id = 5666.888M, FirstName = "GHI", LastName = "JKL",Address="Dublin", Email="ghi.jkl@pramerica.ie" },
+                new ExcelTestData{ },
+                new ExcelTestData { Id = 666.88M, FirstName = "Test Data", LastName = "JKL",Address="London", Email="ghi.jkl@pramerica.ie" },
+                new ExcelTestData{ },
+                new ExcelTestData { Id = 744.88M, FirstName = "Find Data", LastName = "JKL",Address="Dublin", Email="ghi.jkl@pramerica.ie" }
+            };
+
+            return users;
+        }
+    }
+
+    public class ExcelTestData1
+    {
+        public decimal? Identity { get; set; }
+
+        public string Name { get; set; }
+
+        public string Surname { get; set; }
+
+        public string CurrentAddress { get; set; }
+
+        public string EmailAddress { get; set; }
+
+        public static IEnumerable<ExcelTestData1> GetUsers()
+        {
+            var users = new List<ExcelTestData1>
+            {
+                new ExcelTestData1 { Identity = 1233.89M, Name = "Aditya", Surname = "Magotra", CurrentAddress="Letterkenny", EmailAddress="aditya.magotra@pramerica.ie" },
+                new ExcelTestData1 { Identity = 22.88M, Name = "ABC", Surname = "DEF",CurrentAddress="Dublin", EmailAddress="abc.def@pramerica.ie" },
+                new ExcelTestData1{ },
+                new ExcelTestData1 { Identity = 3.00M, Name = "GHI", Surname = "JKL",CurrentAddress="London", EmailAddress="ghi.jkl@pramerica.ie" },
+                new ExcelTestData1 { Identity = 45555.888M, Name = "Test", Surname = "JKL",CurrentAddress="London", EmailAddress="ghi.jkl@pramerica.ie" },
+                new ExcelTestData1{ },
+                new ExcelTestData1{ },
+                new ExcelTestData1 { Identity = 5666.888M, Name = "GHI", Surname = "JKL",CurrentAddress="Dublin", EmailAddress="ghi.jkl@pramerica.ie" },
+                new ExcelTestData1{ },
+                new ExcelTestData1 { Identity = 666.88M, Name = "Test Data", Surname = "JKL",CurrentAddress="London", EmailAddress="ghi.jkl@pramerica.ie" },
+                new ExcelTestData1{ },
+                new ExcelTestData1 { Identity = 744.88M, Name = "Find Data", Surname = "JKL",CurrentAddress="Dublin", EmailAddress="ghi.jkl@pramerica.ie" }
+            };
+
+            return users;
+        }
+    }
+
+
+    public class Issu
+    {
+        public int? IssueId { get; set; }
+
+        public string CompanyName { get; set; }
+
+        public string Location { get; set; }
+
+        public static List<Issu> GetIssus()
+        {
+            var issues = new List<Issu>();
+
+            issues.Add(new Issu { CompanyName = "ABC", IssueId = 111, Location = "India" });
+            issues.Add(new Issu { CompanyName = "XYZ", IssueId = 123, Location = "Ireland" });
+            issues.Add(new Issu { });
+            issues.Add(new Issu { CompanyName = "ZZZ", IssueId = 156, Location = "US" });
+            issues.Add(new Issu { });
+            issues.Add(new Issu { });
+            issues.Add(new Issu { CompanyName = "MNC", IssueId = 122, Location = "Spain" });
+            issues.Add(new Issu { });
+            issues.Add(new Issu { CompanyName = "DFG", IssueId = 133, Location = "Ireland" });
+
+            return issues;
+        }
+    }
+}
+
+
